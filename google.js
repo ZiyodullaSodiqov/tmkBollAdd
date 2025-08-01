@@ -1,7 +1,6 @@
 const { Telegraf } = require('telegraf');
 const { google } = require('googleapis');
 const winston = require('winston');
-require('dotenv').config();
 
 
 const logger = winston.createLogger({
@@ -11,11 +10,11 @@ const logger = winston.createLogger({
 });
 
 
-const bot = new Telegraf(process.env.BOT_TOKEN);
+const bot = new Telegraf('8099453486:AAFxEK9_h30wTzdppYUrXT0MNhfMId0kOS4');
 
 
 const auth = new google.auth.GoogleAuth({
-    keyFile: process.env.GOOGLE_APPLICATION_CREDENTIALS,
+    keyFile: 'mysheetsbot-467709-c0d5031162c7.json',
     scopes: ['https://www.googleapis.com/auth/spreadsheets'],
 });
 
