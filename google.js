@@ -31,7 +31,7 @@ function keepAlive() {
         try {
             logger.info('Keep-alive so‘rovi yuborildi...');
             
-            const healthCheck = { reply: (message) => logger.info(`Health check: ${message}`) };
+            const healthCheck = { reply: (message) => logger.info(Health check: ${message}) };
             await healthHandler(healthCheck);
         } catch (error) {
             logger.error('Keep-alive xatosi:', error.message, error.stack);
@@ -46,7 +46,7 @@ async function healthHandler(ctx) {
         ctx.reply('Bot ✅! Server holati: ✅');
         logger.info('Health check ✅😒');
     } catch (error) {
-        ctx.reply(`Error: ${error.message}. Admin: 912220635`);
+        ctx.reply(Error: ${error.message}. Admin: 912220635);
         logger.error('Health check xatosi:', error.message, error.stack);
     }
 }
@@ -61,7 +61,7 @@ async function getSheetName() {
             spreadsheetId,
             fields: 'sheets.properties.title',
         });
-        if (!response.data.sheets || response.data.sheets.length === 0) {
+        if (!response.data.sheets  response.data.sheets.length === 0) {
             throw new Error('Sheet’da varaqlar topilmadi.');
         }
         cachedSheetName = response.data.sheets[0].properties.title;
@@ -100,7 +100,7 @@ async function getCycleReport() {
             spreadsheetId,
             range: `${sheetName}!A:E`,
         });
-        const rows = response.data.values || [];
+        const rows = response.data.values  [];
         const cycleRows = rows.filter(row => row[2].includes('Cycle'));
         const report = cycleRows.map(row => ({
             driverName: row[0],
@@ -115,13 +115,11 @@ async function getCycleReport() {
         throw error;
     }
 }
-
-
 function isWithinShift(date, shift) {
     const hours = date.getHours();
     if (shift === '07:00-15:00') return hours >= 7 && hours < 15;
     if (shift === '15:00-23:00') return hours >= 15 && hours < 23;
-    if (shift === '23:00-07:00') return (hours >= 23 || hours < 7);
+    if (shift === '23:00-07:00') return (hours >= 23  hours < 7);
     return false;
 }
 
@@ -242,7 +240,7 @@ bot.action(['Shift', 'Break', 'Cycle', 'Drive', 'PTI', 'Viol&Fix', 'Teleport', '
     const action = ctx.callbackQuery.data;
     const state = userState[userId];
 
-    if (!state || state.step !== 'menu') {
+    if (!state  state.step !== 'menu') {
         return ctx.reply('/start');
     }
 
@@ -256,14 +254,14 @@ bot.action(['Shift', 'Break', 'Cycle', 'Drive', 'PTI', 'Viol&Fix', 'Teleport', '
             delete userState[userId];
             ctx.reply('New /start');
         } catch (error) {
-            ctx.reply(`Error: ${error.message}. Admin: 912220635`);
+            ctx.reply(Error: ${error.message}. Admin: 912220635);
         }
     } else {
         if (!state.selectedActions.includes(action)) {
             state.selectedActions.push(action);
-            ctx.reply(`Tanlandi: ${action}. Yana tanlash uchun tugmalarni bosing yoki "Submit" bosing.`);
+            ctx.reply(Tanlandi: ${action}. Yana tanlash uchun tugmalarni bosing yoki "Submit" bosing.);
         } else {
-            ctx.reply(`${action} allaqachon tanlangan. Boshqa tugmalarni tanlang yoki "Submit" bosing.`);
+            ctx.reply(${action} allaqachon tanlangan. Boshqa tugmalarni tanlang yoki "Submit" bosing.);
         }
     }
 });
