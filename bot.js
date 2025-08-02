@@ -4,7 +4,7 @@ const moment = require('moment-timezone');
 const express = require('express');
 
 const token = '8011091957:AAEOS_Euu9gd-JcE7mI8vTOSosaPyNO_PT8';
-const channelId = '-1002734172243';
+const channelId = '5157524731';
 
 const bot = new TelegramBot(token, { 
     polling: {
