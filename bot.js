@@ -56,7 +56,7 @@ const handleFile = async (chatId, fileType, msg) => {
     await file.save();
     
     const count = await File.countDocuments({ chatId: chatId.toString() });
-    await bot.sendMessage(chatId, `Fayl qabul qilindi: ${fileType.toUpperCase()}\nJami fayllar soni: ${count}`);
+    // await bot.sendMessage(chatId, `Fayl qabul qilindi: ${fileType.toUpperCase()}\nJami fayllar soni: ${count}`);
 
     let userInfo;
     if (msg.forward_from || (msg.forward_origin && msg.forward_origin.type === 'user')) {
