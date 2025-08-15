@@ -8,7 +8,7 @@ const moment = require("moment-timezone");
 
 // Configuration
 const config = {
-  TELEGRAM_TOKEN: "8099453486:AAFxEK9_h30wTzdppYUrXT0MNhfMId0kOS4",
+  TELEGRAM_TOKEN: "8011091957:AAFT_UPBE9QrOaQMQ5BubbswzUhxk3vHO7I",
   MONGO_URI: "mongodb+srv://Ziydoulla:ziyodulla0105@cluster0.heagvwv.mongodb.net/fileBot?retryWrites=true&w=majority&appName=Cluster0",
   PORT: 3001,
   UPLOAD_DIR: path.join(__dirname, "Uploads"),
@@ -35,7 +35,7 @@ const app = express();
 
 // Middleware
 app.use(cors({
-  origin: "http://localhost:3000",
+  origin: "https://mellow-lollipop-10b07a.netlify.app",
   methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
   allowedHeaders: ["Content-Type", "Authorization"],
   credentials: true
