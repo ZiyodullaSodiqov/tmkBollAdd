@@ -1,14 +1,28 @@
-const express = require('express');
-const mongoose = require('mongoose');
-const cors = require('cors');
-const fs = require('fs');
-const path = require('path');
-const TelegramBot = require('node-telegram-bot-api');
-const moment = require('moment-timezone');
-const PQueue = require('p-queue').default;
+const express = require("express");
+const mongoose = require("mongoose");
+const cors = require("cors");
+const fs = require("fs");
+const path = require("path");
+const TelegramBot = require("node-telegram-bot-api");
+const moment = require("moment-timezone");
 
-const token = '8099453486:AAFxEK9_h30wTzdppYUrXT0MNhfMId0kOS4';
-const bot = new TelegramBot(token, {
+// Configuration
+const config = {
+  TELEGRAM_TOKEN: "8099453486:AAFxEK9_h30wTzdppYUrXT0MNhfMId0kOS4",
+  MONGO_URI: "mongodb+srv://Ziydoulla:ziyodulla0105@cluster0.heagvwv.mongodb.net/fileBot?retryWrites=true&w=majority&appName=Cluster0",
+  PORT: 3001,
+  UPLOAD_DIR: path.join(__dirname, "Uploads"),
+  ALLOWED_FILE_TYPES: ["zip", "png", "jpg", "jpeg", "pdf", "txt", "docx", "rar", "tar", "csv", "xlsx", "xls"],
+  AVAILABLE_IDS: ["#C102", "#C444", "#C707", "#C001", "#C015", "#C708"],
+  SHIFTS: [
+    { name: "morning", start: 7, end: 15 },
+    { name: "afternoon", start: 15, end: 23 },
+    { name: "night", start: 23, end: 7 }
+  ]
+};
+
+// Initialize
+const bot = new TelegramBot(config.TELEGRAM_TOKEN, {
   polling: {
     interval: 300,
     autoStart: true,
@@ -19,578 +33,402 @@ const bot = new TelegramBot(token, {
 
 const app = express();
 
-// Enhanced CORS configuration
+// Middleware
 app.use(cors({
-  origin: 'http://localhost:3000',
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization'],
+  origin: "http://localhost:3000",
+  methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization"],
   credentials: true
 }));
 app.use(express.json());
 
-// MongoDB connection with retry logic
-const connectWithRetry = () => {
-  mongoose.connect('mongodb+srv://Ziydoulla:ziyodulla0105@cluster0.heagvwv.mongodb.net/fileBot?retryWrites=true&w=majority&appName=Cluster0', {
-    useNewUrlParser: true,
-    useUnifiedTopology: true
-  })
-  .then(() => console.log('Successfully connected to MongoDB'))
-  .catch(err => {
-    console.error('MongoDB connection error:', err);
-    setTimeout(connectWithRetry, 5000);
-  });
-};
-connectWithRetry();
+// Database Connection
+mongoose.connect(config.MONGO_URI, {
+  useNewUrlParser: true,
+  useUnifiedTopology: true
+})
+.then(() => console.log("✅ Connected to MongoDB"))
+.catch(err => console.error("❌ MongoDB connection error:", err));
 
-// File model with enhanced tracking
-const FileSchema = new mongoose.Schema({
+// File Model
+const fileSchema = new mongoose.Schema({
   fileId: { type: String, required: true },
   originalName: { type: String, required: true },
   fileType: { type: String, required: true },
   userId: { type: String, required: true },
   userSelectedId: { type: String, default: null },
-  shift: { type: String, required: true },
   chatId: { type: String, required: true },
-  filePath: { type: String, default: null },
-  uploadTime: { type: Date, required: true },
+  shift: { type: String, required: true },
+  filePath: { type: String, required: true },
+  uploadTime: { type: Date, default: () => moment().tz('UTC').toDate() }, // Use UTC
   saveTime: { type: Date, default: null },
   deleteTime: { type: Date, default: null },
   status: { 
     type: String, 
-    enum: ['pending', 'saved', 'deleted'], 
-    default: 'pending' 
+    enum: ["pending", "saved", "deleted"], 
+    default: "pending" 
   }
 });
-const File = mongoose.model('File', FileSchema);
 
-// Pending State model
-const PendingStateSchema = new mongoose.Schema({
-  messageId: { type: String, required: true },
-  fileInfo: { type: Object, required: true },
-  userId: { type: String, required: true },
-  chatId: { type: String, required: true },
-  uploadTime: { type: Date, required: true },
-  createdAt: { 
-    type: Date, 
-    default: Date.now, 
-    expires: '24h' // Auto-expire after 24 hours
-  }
-});
-const PendingState = mongoose.model('PendingState', PendingStateSchema);
+// Indexes for performance
+fileSchema.index({ uploadTime: 1, shift: 1, status: 1 });
+fileSchema.index({ uploadTime: 1, userSelectedId: 1, status: 1 });
+fileSchema.index({ uploadTime: 1, fileType: 1, status: 1 });
+
+const File = mongoose.model("File", fileSchema);
 
 // Ensure uploads directory exists
-const UPLOAD_DIR = path.join(__dirname, 'uploads');
-if (!fs.existsSync(UPLOAD_DIR)) {
-  fs.mkdirSync(UPLOAD_DIR, { recursive: true });
+if (!fs.existsSync(config.UPLOAD_DIR)) {
+  fs.mkdirSync(config.UPLOAD_DIR, { recursive: true });
 }
 
-// Available IDs and queue
-const availableIds = ['#C102', '#C444', '#C707', '#C001', '#C015', '#C708'];
-const fileQueue = new PQueue({ concurrency: 1 });
+// Helper Functions
+function getCurrentShift() {
+  const hours = moment().tz('UTC').hours(); // Use UTC for shift calculation
+  for (const shift of config.SHIFTS) {
+    if (shift.name === "night") {
+      if (hours >= shift.start || hours < shift.end) return shift.name;
+    } else {
+      if (hours >= shift.start && hours < shift.end) return shift.name;
+    }
+  }
+  return "morning";
+}
 
-// Helper functions
 function createIdKeyboard() {
   const keyboard = [];
-  for (let i = 0; i < availableIds.length; i += 2) {
+  for (let i = 0; i < config.AVAILABLE_IDS.length; i += 2) {
     const row = [];
-    row.push({ text: availableIds[i], callback_data: availableIds[i] });
-    if (availableIds[i + 1]) {
-      row.push({ text: availableIds[i + 1], callback_data: availableIds[i + 1] });
+    row.push({ text: config.AVAILABLE_IDS[i], callback_data: config.AVAILABLE_IDS[i] });
+    if (config.AVAILABLE_IDS[i + 1]) {
+      row.push({ text: config.AVAILABLE_IDS[i + 1], callback_data: config.AVAILABLE_IDS[i + 1] });
     }
     keyboard.push(row);
   }
   return { inline_keyboard: keyboard };
 }
 
-function getCurrentShift() {
-  const hours = new Date().getHours();
-  return hours >= 7 && hours < 15 ? 'morning' :
-         hours >= 15 && hours < 23 ? 'afternoon' : 'night';
-}
+// User state management
+const userState = new Map();
 
-// Recover pending states on startup
-async function recoverPendingStates() {
-  const pendings = await PendingState.find();
-  for (const pending of pendings) {
+// Bot Event Handlers
+bot.on("message", async (msg) => {
+  const chatId = msg.chat.id;
+  const userId = msg.from.id;
+
+  if (msg.document || msg.photo) {
     try {
+      let fileId, fileName, fileType;
+
+      if (msg.document) {
+        fileType = msg.document.file_name?.split(".").pop().toLowerCase() || "bin";
+        if (!config.ALLOWED_FILE_TYPES.includes(fileType)) {
+          return bot.sendMessage(chatId, `❌ File type ${fileType} is not allowed.`);
+        }
+        fileId = msg.document.file_id;
+        fileName = msg.document.file_name || `document_${fileId}.${fileType}`;
+      } else if (msg.photo) {
+        fileId = msg.photo[msg.photo.length - 1].file_id;
+        fileName = `photo_${fileId}.jpg`;
+        fileType = "jpg";
+      }
+
       const replyMarkup = createIdKeyboard();
-      const messageText = `Fayl uchun ID tanlang (qayta tiklandi): ${pending.fileInfo.fileName}`;
-      const replyMsg = await bot.sendMessage(pending.chatId, messageText, {
-        reply_to_message_id: pending.fileInfo.originalMsgId,
+      const replyMsg = await bot.sendMessage(chatId, "📁 File received! Please select an ID:", {
+        reply_to_message_id: msg.message_id,
         reply_markup: replyMarkup
       });
-      await PendingState.updateOne({ _id: pending._id }, {
-        messageId: replyMsg.message_id.toString()
+
+      userState.set(replyMsg.message_id, {
+        fileInfo: {
+          fileId,
+          fileName,
+          fileType,
+          shift: getCurrentShift(),
+          originalMsgId: msg.message_id
+        },
+        userId: userId.toString(),
+        chatId: chatId.toString()
       });
     } catch (error) {
-      console.error('Pending state recovery error:', error);
-      await saveFileWithoutId(pending);
+      console.error("Error processing file:", error);
+      bot.sendMessage(chatId, "❌ Error processing your file. Please try again.");
     }
   }
-}
+});
 
-// Save file without ID (if deleted or error)
-async function saveFileWithoutId(state) {
+bot.on("callback_query", async (callbackQuery) => {
+  const messageId = callbackQuery.message.message_id;
+  const chatId = callbackQuery.message.chat.id;
+  const selectedId = callbackQuery.data;
+  const state = userState.get(messageId);
+
+  if (!state || !config.AVAILABLE_IDS.includes(selectedId)) {
+    return bot.answerCallbackQuery(callbackQuery.id, {
+      text: "Invalid selection or file not found",
+      show_alert: true
+    });
+  }
+
   try {
+    const filePath = path.join(config.UPLOAD_DIR, `${state.fileInfo.fileId}_${state.fileInfo.fileName}`);
+    const fileStream = bot.getFileStream(state.fileInfo.fileId);
+    const writeStream = fs.createWriteStream(filePath);
+
+    await new Promise((resolve, reject) => {
+      fileStream.pipe(writeStream);
+      writeStream.on("finish", resolve);
+      writeStream.on("error", reject);
+    });
+
     const fileRecord = new File({
       fileId: state.fileInfo.fileId,
       originalName: state.fileInfo.fileName,
       fileType: state.fileInfo.fileType,
       userId: state.userId,
-      userSelectedId: null,
+      userSelectedId: selectedId,
       shift: state.fileInfo.shift,
       chatId: state.chatId,
-      filePath: null,
-      uploadTime: state.uploadTime,
-      deleteTime: new Date(),
-      status: 'deleted'
+      filePath,
+      saveTime: moment().tz('UTC').toDate(), // Use UTC
+      status: "saved"
     });
+
     await fileRecord.save();
-    await PendingState.deleteOne({ _id: state._id });
     
-    // Clean up messages
-    await bot.deleteMessage(state.chatId, state.fileInfo.originalMsgId).catch(() => {});
-    await bot.deleteMessage(state.chatId, state.messageId).catch(() => {});
-  } catch (error) {
-    console.error('Save without ID error:', error);
-  }
-}
+    // Clean up
+    await bot.deleteMessage(chatId, state.fileInfo.originalMsgId).catch(console.error);
+    await bot.deleteMessage(chatId, messageId).catch(console.error);
+    userState.delete(messageId);
 
-// Bot Message Handling
-bot.on('message', async (msg) => {
-  const chatId = msg.chat.id;
-  const userId = msg.from.id;
-  const uploadTime = new Date();
-
-  if (msg.document || msg.photo || msg.video || msg.audio) {
-    try {
-      let fileId, fileName, fileType;
-      if (msg.document) {
-        fileId = msg.document.file_id;
-        fileName = msg.document.file_name || 'document';
-        fileType = 'document';
-      } else if (msg.photo) {
-        fileId = msg.photo[msg.photo.length - 1].file_id;
-        fileName = 'photo.jpg';
-        fileType = 'photo';
-      } else if (msg.video) {
-        fileId = msg.video.file_id;
-        fileName = msg.video.file_name || 'video.mp4';
-        fileType = 'video';
-      } else if (msg.audio) {
-        fileId = msg.audio.file_id;
-        fileName = msg.audio.file_name || 'audio.mp3';
-        fileType = 'audio';
-      }
-
-      // Create initial file record
-      const fileRecord = new File({
-        fileId,
-        originalName: fileName,
-        fileType,
-        userId: userId.toString(),
-        userSelectedId: null,
-        shift: getCurrentShift(),
-        chatId: chatId.toString(),
-        filePath: null,
-        uploadTime,
-        status: 'pending'
-      });
-      await fileRecord.save();
-
-      const replyMarkup = createIdKeyboard();
-      const replyMsg = await bot.sendMessage(chatId, 'Fayl uchun ID tanlang:', {
-        reply_to_message_id: msg.message_id,
-        reply_markup: replyMarkup
-      });
-
-      // Save pending state
-      await new PendingState({
-        messageId: replyMsg.message_id.toString(),
-        fileInfo: { 
-          fileId, 
-          fileName, 
-          fileType, 
-          shift: getCurrentShift(), 
-          originalMsgId: msg.message_id,
-          fileRecordId: fileRecord._id 
-        },
-        userId: userId.toString(),
-        chatId: chatId.toString(),
-        uploadTime
-      }).save();
-
-    } catch (error) {
-      console.error('Xatolik:', error);
-      await bot.sendMessage(chatId, 'Faylni qayta ishlashda xatolik yuz berdi. Iltimos, qayta urinib koring.').catch(() => {});
-    }
-  }
-});
-
-// Callback Query - Handle ID selection
-bot.on('callback_query', async (callbackQuery) => {
-  const messageId = callbackQuery.message.message_id.toString();
-  const chatId = callbackQuery.message.chat.id;
-  const userId = callbackQuery.from.id;
-  const selectedId = callbackQuery.data;
-
-  const state = await PendingState.findOne({ messageId });
-  if (!state || !availableIds.includes(selectedId)) {
-    return bot.answerCallbackQuery(callbackQuery.id, {
-      text: 'Noto‘g‘ri tanlov yoki fayl mavjud emas',
-      show_alert: true
-    }).catch(() => {});
-  }
-
-  try {
-    await fileQueue.add(async () => {
-      const saveTime = new Date();
-      let filePath = path.join(UPLOAD_DIR, `${state.fileInfo.fileId}_${state.fileInfo.fileName}`);
-      let fileSaved = false;
-
-      try {
-        // Download and save file
-        const fileStream = bot.getFileStream(state.fileInfo.fileId);
-        const writeStream = fs.createWriteStream(filePath);
-        fileStream.pipe(writeStream);
-
-        await new Promise((resolve, reject) => {
-          writeStream.on('finish', resolve);
-          writeStream.on('error', reject);
-          fileStream.on('error', reject);
-        });
-        fileSaved = true;
-      } catch (saveError) {
-        console.error('File save error:', saveError);
-        filePath = null;
-      }
-
-      // Update file record
-      await File.findByIdAndUpdate(state.fileInfo.fileRecordId, {
-        userSelectedId: selectedId,
-        filePath: fileSaved ? filePath : null,
-        saveTime: fileSaved ? saveTime : null,
-        deleteTime: fileSaved ? null : new Date(),
-        status: fileSaved ? 'saved' : 'deleted'
-      });
-
-      // Clean up
-      await bot.deleteMessage(chatId, state.fileInfo.originalMsgId).catch(console.error);
-      await bot.deleteMessage(chatId, state.messageId).catch(console.error);
-      await PendingState.deleteOne({ _id: state._id });
-
-      await bot.answerCallbackQuery(callbackQuery.id).catch(() => {});
+    await bot.answerCallbackQuery(callbackQuery.id, {
+      text: `✅ File assigned to ${selectedId}`,
+      show_alert: false
     });
   } catch (error) {
-    console.error('Callback xatosi:', error);
+    console.error("Error saving file:", error);
     await bot.answerCallbackQuery(callbackQuery.id, {
-      text: 'Faylni saqlashda xatolik yuz berdi',
+      text: "❌ Error saving file",
       show_alert: true
-    }).catch(() => {});
-    await saveFileWithoutId(state);
+    });
   }
 });
 
 // API Routes
-app.get('/api/files', async (req, res) => {
+app.get("/api/health", (req, res) => {
+  res.status(200).json({
+    status: "ok",
+    message: "Bot and API server are running",
+    timestamp: moment().tz('UTC').toISOString()
+  });
+});
+
+app.get("/api/files", async (req, res) => {
   try {
-    const { date, shift, fileType } = req.query;
-    let query = {};
-    
+    const { date, year, month, shift, fileType } = req.query;
+    const query = { status: "saved" };
+
+    let startDate, endDate;
     if (date) {
-      const startDate = new Date(date);
-      const endDate = new Date(startDate);
-      endDate.setDate(endDate.getDate() + 1);
+      startDate = moment.tz(date, 'YYYY-MM-DD', 'UTC').startOf('day').toDate();
+      endDate = moment(startDate).add(1, 'day').toDate();
+      query.uploadTime = { $gte: startDate, $lt: endDate };
+    } else if (year && month) {
+      startDate = moment.tz(`${year}-${month}-01`, 'UTC').startOf('month').toDate();
+      endDate = moment(startDate).add(1, 'month').toDate();
       query.uploadTime = { $gte: startDate, $lt: endDate };
     }
-    
+
     if (shift && shift !== 'all') query.shift = shift;
     if (fileType && fileType !== 'all') query.fileType = fileType;
-    
+
     const files = await File.find(query).sort({ uploadTime: -1 });
     res.json(files);
   } catch (error) {
+    console.error("Error fetching files:", error);
     res.status(500).json({ message: error.message });
   }
 });
 
-app.get('/api/files/:id/download', async (req, res) => {
+app.get("/api/files/:id/download", async (req, res) => {
   try {
     const file = await File.findById(req.params.id);
-    if (!file || !file.filePath) {
-      return res.status(404).json({ message: 'File not found' });
-    }
+    if (!file) return res.status(404).json({ message: "File not found" });
+    if (!fs.existsSync(file.filePath)) return res.status(404).json({ message: "File not found on server" });
     res.download(file.filePath, file.originalName);
   } catch (error) {
+    console.error("Error downloading file:", error);
     res.status(500).json({ message: error.message });
   }
 });
 
-// Statistics endpoints
-app.get('/api/stats/daily', async (req, res) => {
+app.delete("/api/files/:id", async (req, res) => {
   try {
-    const { date } = req.query;
-    const startDate = new Date(date);
-    const endDate = new Date(startDate);
-    endDate.setDate(endDate.getDate() + 1);
-    
-    const stats = await File.aggregate([
-      { $match: { uploadTime: { $gte: startDate, $lt: endDate } } },
-      { $group: {
-        _id: '$shift',
-        count: { $sum: 1 }
-      }},
-      { $sort: { _id: 1 } }
-    ]);
-    res.json(stats);
-  } catch (error) {
-    res.status(500).json({ message: error.message });
-  }
-});
+    const file = await File.findByIdAndUpdate(req.params.id, {
+      status: "deleted",
+      deleteTime: moment().tz('UTC').toDate(),
+      userSelectedId: "N/A"
+    }, { new: true });
 
-app.get('/api/stats/id', async (req, res) => {
-  try {
-    const { date } = req.query;
-    const startDate = new Date(date);
-    const endDate = new Date(startDate);
-    endDate.setDate(endDate.getDate() + 1);
+    if (!file) return res.status(404).json({ message: "File not found" });
     
-    const stats = await File.aggregate([
-      { $match: { 
-        uploadTime: { $gte: startDate, $lt: endDate },
-        userSelectedId: { $ne: null } 
-      }},
-      { $group: {
-        _id: '$userSelectedId',
-        count: { $sum: 1 }
-      }},
-      { $sort: { _id: 1 } }
-    ]);
-    res.json(stats);
-  } catch (error) {
-    res.status(500).json({ message: error.message });
-  }
-});
-
-app.get('/api/stats/monthly', async (req, res) => {
-  try {
-    const { year, month } = req.query;
-    const startDate = new Date(`${year}-${month}-01`);
-    const endDate = new Date(startDate);
-    endDate.setMonth(endDate.getMonth() + 1);
-    
-    const stats = await File.aggregate([
-      { $match: { uploadTime: { $gte: startDate, $lt: endDate } } },
-      { $project: {
-        day: { $dayOfMonth: '$uploadTime' },
-        shift: 1
-      }},
-      { $group: {
-        _id: { day: '$day', shift: '$shift' },
-        count: { $sum: 1 }
-      }},
-      { $group: {
-        _id: '$_id.day',
-        shifts: {
-          $push: {
-            shift: '$_id.shift',
-            count: '$count'
-          }
-        },
-        totalCount: { $sum: '$count' }
-      }},
-      { $sort: { _id: 1 } }
-    ]);
-    res.json(stats);
-  } catch (error) {
-    res.status(500).json({ message: error.message });
-  }
-});
-
-app.get('/api/reports/monthly', async (req, res) => {
-  try {
-    const { year, month, fileType } = req.query;
-    const startDate = new Date(`${year}-${month}-01`);
-    const endDate = new Date(startDate);
-    endDate.setMonth(endDate.getMonth() + 1);
-    
-    let match = { 
-      uploadTime: { $gte: startDate, $lt: endDate },
-      status: 'saved' // Only include saved files
-    };
-    
-    if (fileType && fileType !== 'all') {
-      match.fileType = fileType;
+    if (fs.existsSync(file.filePath)) {
+      fs.unlinkSync(file.filePath);
     }
-    
-    const reports = await File.aggregate([
-      { $match: match },
+
+    res.json({ message: "File deleted successfully" });
+  } catch (error) {
+    console.error("Error deleting file:", error);
+    res.status(500).json({ message: error.message });
+  }
+});
+
+app.get("/api/reports/shift", async (req, res) => {
+  try {
+    const { date, fileType } = req.query;
+    if (!date) return res.status(400).json({ message: "Date is required" });
+
+    const startDate = moment.tz(date, 'YYYY-MM-DD', 'UTC').startOf('day').toDate();
+    const endDate = moment(startDate).add(1, 'day').toDate();
+
+    const query = { uploadTime: { $gte: startDate, $lt: endDate }, status: "saved" };
+    if (fileType && fileType !== 'all') query.fileType = fileType;
+
+    const stats = await File.aggregate([
+      { $match: query },
+      { $group: { _id: "$shift", count: { $sum: 1 } } },
+      { $sort: { _id: 1 } }
+    ]);
+
+    // Ensure all shifts are represented
+    const allShifts = ['morning', 'afternoon', 'night'];
+    const result = allShifts.map(shift => ({
+      _id: shift,
+      count: stats.find(s => s._id === shift)?.count || 0
+    }));
+
+    res.json(result);
+  } catch (error) {
+    console.error("Error fetching shift report:", error);
+    res.status(500).json({ message: error.message });
+  }
+});
+
+app.get("/api/reports/id", async (req, res) => {
+  try {
+    const { date, year, month, shift, fileType } = req.query;
+    let startDate, endDate;
+
+    if (date) {
+      startDate = moment.tz(date, 'YYYY-MM-DD', 'UTC').startOf('day').toDate();
+      endDate = moment(startDate).add(1, 'day').toDate();
+    } else if (year && month) {
+      startDate = moment.tz(`${year}-${month}-01`, 'UTC').startOf('month').toDate();
+      endDate = moment(startDate).add(1, 'month').toDate();
+    } else {
+      return res.status(400).json({ message: "Date or year/month required" });
+    }
+
+    const query = { uploadTime: { $gte: startDate, $lt: endDate }, status: "saved" };
+    if (shift && shift !== 'all') query.shift = shift;
+    if (fileType && fileType !== 'all') query.fileType = fileType;
+
+    const stats = await File.aggregate([
+      { $match: query },
+      { $group: { _id: "$userSelectedId", count: { $sum: 1 } } },
+      { $sort: { _id: 1 } }
+    ]);
+
+    res.json(stats);
+  } catch (error) {
+    console.error("Error fetching ID report:", error);
+    res.status(500).json({ message: error.message });
+  }
+});
+
+app.get("/api/reports/id_by_shift", async (req, res) => {
+  try {
+    const { date, year, month, fileType } = req.query;
+    let startDate, endDate;
+
+    if (date) {
+      startDate = moment.tz(date, 'YYYY-MM-DD', 'UTC').startOf('day').toDate();
+      endDate = moment(startDate).add(1, 'day').toDate();
+    } else if (year && month) {
+      startDate = moment.tz(`${year}-${month}-01`, 'UTC').startOf('month').toDate();
+      endDate = moment(startDate).add(1, 'month').toDate();
+    } else {
+      return res.status(400).json({ message: "Date or year/month required" });
+    }
+
+    const query = { uploadTime: { $gte: startDate, $lt: endDate }, status: "saved" };
+    if (fileType && fileType !== 'all') query.fileType = fileType;
+
+    const stats = await File.aggregate([
+      { $match: query },
+      { $group: { _id: { userSelectedId: "$userSelectedId", shift: "$shift" }, count: { $sum: 1 } } },
+      { $sort: { "_id.userSelectedId": 1, "_id.shift": 1 } }
+    ]);
+
+    res.json(stats);
+  } catch (error) {
+    console.error("Error fetching ID by shift report:", error);
+    res.status(500).json({ message: error.message });
+  }
+});
+
+app.get("/api/reports/monthly", async (req, res) => {
+  try {
+    const { year, month, shift, fileType } = req.query;
+    if (!year || !month) return res.status(400).json({ message: "Year and month are required" });
+
+    const startDate = moment.tz(`${year}-${month}-01`, 'UTC').startOf('month').toDate();
+    const endDate = moment(startDate).add(1, 'month').toDate();
+
+    const query = { uploadTime: { $gte: startDate, $lt: endDate }, status: "saved" };
+    if (shift && shift !== 'all') query.shift = shift;
+    if (fileType && fileType !== 'all') query.fileType = fileType;
+
+    const stats = await File.aggregate([
+      { $match: query },
+      { 
+        $group: { 
+          _id: {
+            day: { $dayOfMonth: "$uploadTime" },
+            shift: "$shift"
+          },
+          count: { $sum: 1 }
+        } 
+      },
       { 
         $group: {
-          _id: '$userSelectedId',
-          count: { $sum: 1 },
-          files: { 
+          _id: "$_id.day",
+          shifts: {
             $push: {
-              fileId: '$fileId',
-              originalName: '$originalName',
-              fileType: '$fileType',
-              uploadTime: '$uploadTime',
-              shift: '$shift'
+              shift: "$_id.shift",
+              count: "$count"
             }
-          }
+          },
+          total: { $sum: "$count" }
         }
       },
       { $sort: { _id: 1 } }
     ]);
-    
-    res.json(reports);
+
+    res.json(stats);
   } catch (error) {
-    console.error('Monthly report error:', error);
-    res.status(500).json({ 
-      message: 'Failed to generate monthly report',
-      error: error.message 
-    });
+    console.error("Error fetching monthly report:", error);
+    res.status(500).json({ message: error.message });
   }
 });
 
-app.delete('/api/files/:id', async (req, res) => {
-  try {
-    const file = await File.findById(req.params.id);
-    
-    if (!file) {
-      return res.status(404).json({ message: 'File not found' });
-    }
-    
-    // Update the file record first
-    const updatedFile = await File.findByIdAndUpdate(
-      req.params.id,
-      { 
-        deleteTime: new Date(),
-        status: 'deleted'
-      },
-      { new: true }
-    );
-    
-    // Then try to delete the physical file
-    if (updatedFile.filePath) {
-      try {
-        if (fs.existsSync(updatedFile.filePath)) {
-          fs.unlinkSync(updatedFile.filePath);
-          console.log(`Deleted file: ${updatedFile.filePath}`);
-        }
-      } catch (fsError) {
-        console.error('File system deletion error:', fsError);
-        // Don't fail the request if file deletion fails
-      }
-    }
-    
-    res.json({ 
-      message: 'File deleted successfully',
-      file: {
-        id: updatedFile._id,
-        name: updatedFile.originalName,
-        status: updatedFile.status
-      }
-    });
-    
-  } catch (error) {
-    console.error('File deletion error:', error);
-    res.status(500).json({ 
-      message: 'Failed to delete file',
-      error: error.message 
-    });
-  }
+// Error Handling
+bot.on("polling_error", (error) => {
+  console.error("Polling error:", error);
 });
 
-app.get('/api/files/:id/status', async (req, res) => {
-  try {
-    const file = await File.findById(req.params.id);
-    
-    if (!file) {
-      return res.status(404).json({ message: 'File not found' });
-    }
-    
-    const fileExists = file.filePath ? fs.existsSync(file.filePath) : false;
-    
-    res.json({
-      id: file._id,
-      status: file.status,
-      fileExists,
-      uploadTime: file.uploadTime,
-      saveTime: file.saveTime,
-      deleteTime: file.deleteTime
-    });
-    
-  } catch (error) {
-    res.status(500).json({ 
-      message: 'Failed to check file status',
-      error: error.message 
-    });
-  }
-});
-
-app.post('/api/files/cleanup', async (req, res) => {
-  try {
-    // Find all files marked as deleted but still existing in filesystem
-    const deletedFiles = await File.find({ 
-      status: 'deleted',
-      filePath: { $ne: null }
-    });
-    
-    let cleaned = 0;
-    let errors = 0;
-    
-    for (const file of deletedFiles) {
-      try {
-        if (file.filePath && fs.existsSync(file.filePath)) {
-          fs.unlinkSync(file.filePath);
-          cleaned++;
-        }
-      } catch (err) {
-        console.error(`Error cleaning file ${file.filePath}:`, err);
-        errors++;
-      }
-    }
-    
-    res.json({
-      message: 'File cleanup completed',
-      cleaned,
-      errors,
-      total: deletedFiles.length
-    });
-    
-  } catch (error) {
-    console.error('Cleanup error:', error);
-    res.status(500).json({ 
-      message: 'Cleanup failed',
-      error: error.message 
-    });
-  }
-});
-
-// Error handling
-bot.on('polling_error', (error) => {
-  console.error('Polling error:', error);
-});
-
-process.on('unhandledRejection', (error) => {
-  console.error('Unhandled rejection:', error);
-});
-
-process.on('uncaughtException', (error) => {
-  console.error('Uncaught exception:', error);
-});
-
-// In your Express server (server.js)
-app.get('/api/ping', (req, res) => {
-  res.json({ status: 'alive', timestamp: new Date() });
-});
-
-
-// Start server
-const PORT = 3001;
-app.listen(PORT, () => {
-  console.log(`Server ${PORT}-portda ishga tushdi`);
-  console.log('Telegram bot ishga tushdi');
-  mongoose.connection.once('open', recoverPendingStates);
+// Start Server
+app.listen(config.PORT, () => {
+  console.log(`🚀 Server running on port ${config.PORT}`);
+  console.log("🤖 Telegram bot is running");
 });

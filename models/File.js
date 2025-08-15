@@ -1,47 +1,29 @@
+// models/File.js
 const mongoose = require('mongoose');
 
 const FileSchema = new mongoose.Schema({
-  fileId: {
-    type: String,
-    required: true
-  },
-  originalName: {
-    type: String,
-    required: true
-  },
-  userId: {
-    type: Number,
-    required: true
-  },
-  userSelectedId: {
-    type: String,
-    enum: ['#C102', '#C444', '#C707', '#C001', '#C015', '#C708'],
-    required: true
-  },
-  timestamp: {
-    type: Date,
-    default: Date.now
-  },
-  shift: {
-    type: String,
-    enum: ['morning', 'afternoon', 'night'],
-    required: true
-  },
-  fileType: {
-    type: String,
-    enum: ['document', 'photo', 'video', 'audio'],
-    required: true
-  },
-  filePath: {
-    type: String,
-    required: true
+  fileId: { type: String, required: true },
+  originalName: { type: String, required: true },
+  fileType: { type: String, required: true },
+  userId: { type: String, required: true },
+  userSelectedId: { type: String, default: null },
+  shift: { type: String, required: true },
+  chatId: { type: String, required: true },
+  filePath: { type: String, default: null },
+  uploadTime: { type: Date, required: true },
+  saveTime: { type: Date, default: null },
+  deleteTime: { type: Date, default: null },
+  status: { 
+    type: String, 
+    enum: ['pending', 'saved', 'deleted'], 
+    default: 'pending' 
   }
-});
+}, { timestamps: true });
 
-// Indexes for better performance
+// Indexes for faster queries
+FileSchema.index({ fileId: 1 }, { unique: true });
 FileSchema.index({ userId: 1 });
-FileSchema.index({ timestamp: 1 });
+FileSchema.index({ status: 1 });
 FileSchema.index({ shift: 1 });
-FileSchema.index({ userSelectedId: 1 });
 
 module.exports = mongoose.model('File', FileSchema);
