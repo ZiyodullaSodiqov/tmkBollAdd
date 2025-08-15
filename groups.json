@@ -1,0 +1,19 @@
+{
+  "truck": [
+    {
+      "name": "#Group2_1",
+      "company": "",
+      "chatId": "-1001234567892",
+      "active": true
+    }
+  ],
+  "pick_up": [
+    {
+      "name": "Pick up 2",
+      "company": "",
+      "chatId": "-4924182018",
+      "active": true
+    }
+  ],
+  "pending": []
+}
