@@ -1,276 +1,434 @@
-const TelegramBot = require('node-telegram-bot-api');
-const mongoose = require('mongoose');
-const moment = require('moment-timezone');
-const express = require('express');
+const express = require("express");
+const mongoose = require("mongoose");
+const cors = require("cors");
+const fs = require("fs");
+const path = require("path");
+const TelegramBot = require("node-telegram-bot-api");
+const moment = require("moment-timezone");
 
-const token = '8011091957:AAEOS_Euu9gd-JcE7mI8vTOSosaPyNO_PT8';
-const channelId = '-1002734172243';
-
-const bot = new TelegramBot(token, { 
-    polling: {
-        interval: 300,
-        autoStart: true,
-        params: {
-            timeout: 10
-        }
-    }
-});
-
-
-const app = express();
-const port = process.env.PORT || 3000;
-
-app.get('/health', (req, res) => {
-    res.status(200).json({ status: 'ok', message: 'Bot is running' });
-});
-
-
-app.listen(port, () => {
-    console.log(`Express server running on port ${port}`);
-});
-
-mongoose.connect('mongodb+srv://Ziydoulla:ziyodulla0105@cluster0.heagvwv.mongodb.net/fileBot?retryWrites=true&w=majority&appName=Cluster0', {
-    serverSelectionTimeoutMS: 5000,
-    socketTimeoutMS: 45000,
-    autoIndex: true
-});
-
-const FileSchema = new mongoose.Schema({
-    chatId: String,
-    fileType: String,
-    timestamp: { type: Date, default: Date.now }
-});
-
-FileSchema.index({ timestamp: 1 }, { expireAfterSeconds: 32 * 24 * 60 * 60 });
-
-const File = mongoose.model('File', FileSchema);
-
-let lastFileMessage = {};
-
-const handleFile = async (chatId, fileType, msg) => {
-    const file = new File({
-        chatId: chatId.toString(),
-        fileType: fileType.toUpperCase(),
-        timestamp: new Date()
-    });
-    await file.save();
-    
-    const count = await File.countDocuments({ chatId: chatId.toString() });
-    await bot.sendMessage(chatId, `Fayl qabul qilindi: ${fileType.toUpperCase()}\nJami fayllar soni: ${count}`);
-
-    let userInfo;
-    if (msg.forward_from || (msg.forward_origin && msg.forward_origin.type === 'user')) {
-        const forwardUser = msg.forward_from || msg.forward_origin.sender_user;
-        userInfo = forwardUser.username ? `@${forwardUser.username}` : `User ID: ${forwardUser.id}`;
-    } else {
-        userInfo = msg.from.username ? `@${msg.from.username}` : `User ID: ${msg.from.id}`;
-    }
-
-    lastFileMessage[chatId] = { message_id: msg.message_id, userInfo: userInfo };
-
-    let forwardedMessage;
-    if (msg.photo) {
-        const photo = msg.photo[msg.photo.length - 1];
-        forwardedMessage = await bot.sendPhoto(channelId, photo.file_id, {
-            caption: `Kimdan: ${userInfo}`,
-            reply_markup: {
-                inline_keyboard: [[
-                    { text: "Add", callback_data: `added_${photo.file_unique_id}` }
-                ]]
-            }
-        });
-    } else if (msg.document) {
-        forwardedMessage = await bot.sendDocument(channelId, msg.document.file_id, {
-            caption: `Kimdan: ${userInfo}`,
-            reply_markup: {
-                inline_keyboard: [[
-                    { text: "Add", callback_data: `added_${msg.document.file_unique_id}` }
-                ]]
-            }
-        });
-    }
+// Configuration
+const config = {
+  TELEGRAM_TOKEN: "8099453486:AAFxEK9_h30wTzdppYUrXT0MNhfMId0kOS4",
+  MONGO_URI: "mongodb+srv://Ziydoulla:ziyodulla0105@cluster0.heagvwv.mongodb.net/fileBot?retryWrites=true&w=majority&appName=Cluster0",
+  PORT: 3001,
+  UPLOAD_DIR: path.join(__dirname, "Uploads"),
+  ALLOWED_FILE_TYPES: ["zip", "png", "jpg", "jpeg", "pdf", "txt", "docx", "rar", "tar", "csv", "xlsx", "xls"],
+  AVAILABLE_IDS: ["#C102", "#C444", "#C707", "#C001", "#C015", "#C708"],
+  SHIFTS: [
+    { name: "morning", start: 7, end: 15 },
+    { name: "afternoon", start: 15, end: 23 },
+    { name: "night", start: 23, end: 7 }
+  ]
 };
 
-bot.on('message', async (msg) => {
-    const chatId = msg.chat.id;
-    console.log('Xabar qabul qilindi:', JSON.stringify(msg, null, 2));
-    console.log('Oxirgi fayl message_id:', lastFileMessage[chatId]?.message_id, 'Joriy message_id:', msg.message_id);
-
-    if (msg.photo || msg.document) {
-        const fileType = msg.document ? msg.document.mime_type.split('/')[1] : 'JPEG';
-        await handleFile(chatId, fileType, msg);
-    } else if (msg.text && lastFileMessage[chatId] && msg.message_id > lastFileMessage[chatId].message_id && !msg.forward_from && !msg.forward_origin) {
-        const userInfo = msg.from.username ? `@${msg.from.username}` : `User ID: ${msg.from.id}`;
-        await bot.sendMessage(channelId, `\n${msg.text}`);
-        console.log(`Fayldan keyingi matn kanalga yuborildi: ${msg.text}`);
-    } else if (msg.text && !msg.document && !msg.photo) {
-        return;
-    }
+// Initialize
+const bot = new TelegramBot(config.TELEGRAM_TOKEN, {
+  polling: {
+    interval: 300,
+    autoStart: true,
+    params: { timeout: 10 }
+  },
+  filepath: false
 });
 
-bot.on('callback_query', async (callbackQuery) => {
+const app = express();
+
+// Middleware
+app.use(cors({
+  origin: "http://localhost:3000",
+  methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization"],
+  credentials: true
+}));
+app.use(express.json());
+
+// Database Connection
+mongoose.connect(config.MONGO_URI, {
+  useNewUrlParser: true,
+  useUnifiedTopology: true
+})
+.then(() => console.log("✅ Connected to MongoDB"))
+.catch(err => console.error("❌ MongoDB connection error:", err));
+
+// File Model
+const fileSchema = new mongoose.Schema({
+  fileId: { type: String, required: true },
+  originalName: { type: String, required: true },
+  fileType: { type: String, required: true },
+  userId: { type: String, required: true },
+  userSelectedId: { type: String, default: null },
+  chatId: { type: String, required: true },
+  shift: { type: String, required: true },
+  filePath: { type: String, required: true },
+  uploadTime: { type: Date, default: () => moment().tz('UTC').toDate() }, // Use UTC
+  saveTime: { type: Date, default: null },
+  deleteTime: { type: Date, default: null },
+  status: { 
+    type: String, 
+    enum: ["pending", "saved", "deleted"], 
+    default: "pending" 
+  }
+});
+
+// Indexes for performance
+fileSchema.index({ uploadTime: 1, shift: 1, status: 1 });
+fileSchema.index({ uploadTime: 1, userSelectedId: 1, status: 1 });
+fileSchema.index({ uploadTime: 1, fileType: 1, status: 1 });
+
+const File = mongoose.model("File", fileSchema);
+
+// Ensure uploads directory exists
+if (!fs.existsSync(config.UPLOAD_DIR)) {
+  fs.mkdirSync(config.UPLOAD_DIR, { recursive: true });
+}
+
+// Helper Functions
+function getCurrentShift() {
+  const hours = moment().tz('UTC').hours(); // Use UTC for shift calculation
+  for (const shift of config.SHIFTS) {
+    if (shift.name === "night") {
+      if (hours >= shift.start || hours < shift.end) return shift.name;
+    } else {
+      if (hours >= shift.start && hours < shift.end) return shift.name;
+    }
+  }
+  return "morning";
+}
+
+function createIdKeyboard() {
+  const keyboard = [];
+  for (let i = 0; i < config.AVAILABLE_IDS.length; i += 2) {
+    const row = [];
+    row.push({ text: config.AVAILABLE_IDS[i], callback_data: config.AVAILABLE_IDS[i] });
+    if (config.AVAILABLE_IDS[i + 1]) {
+      row.push({ text: config.AVAILABLE_IDS[i + 1], callback_data: config.AVAILABLE_IDS[i + 1] });
+    }
+    keyboard.push(row);
+  }
+  return { inline_keyboard: keyboard };
+}
+
+// User state management
+const userState = new Map();
+
+// Bot Event Handlers
+bot.on("message", async (msg) => {
+  const chatId = msg.chat.id;
+  const userId = msg.from.id;
+
+  if (msg.document || msg.photo) {
     try {
-        const message = callbackQuery.message;
-        const data = callbackQuery.data;
-        console.log('Callback query:', data);
+      let fileId, fileName, fileType;
 
-        if (data.startsWith('added_')) {
-            await bot.editMessageReplyMarkup({
-                inline_keyboard: [[
-                    { text: "✅", callback_data: 'done' }
-                ]]
-            }, {
-                chat_id: message.chat.id,
-                message_id: message.message_id
-            });
-
-            await bot.answerCallbackQuery(callbackQuery.id, { text: 'Fayl tasdiqlandi!' });
-        } else if (data === 'done') {
-            await bot.answerCallbackQuery(callbackQuery.id, { text: 'Fayl allaqachon tasdiqlangan!' });
+      if (msg.document) {
+        fileType = msg.document.file_name?.split(".").pop().toLowerCase() || "bin";
+        if (!config.ALLOWED_FILE_TYPES.includes(fileType)) {
+          return bot.sendMessage(chatId, `❌ File type ${fileType} is not allowed.`);
         }
+        fileId = msg.document.file_id;
+        fileName = msg.document.file_name || `document_${fileId}.${fileType}`;
+      } else if (msg.photo) {
+        fileId = msg.photo[msg.photo.length - 1].file_id;
+        fileName = `photo_${fileId}.jpg`;
+        fileType = "jpg";
+      }
+
+      const replyMarkup = createIdKeyboard();
+      const replyMsg = await bot.sendMessage(chatId, "📁 File received! Please select an ID:", {
+        reply_to_message_id: msg.message_id,
+        reply_markup: replyMarkup
+      });
+
+      userState.set(replyMsg.message_id, {
+        fileInfo: {
+          fileId,
+          fileName,
+          fileType,
+          shift: getCurrentShift(),
+          originalMsgId: msg.message_id
+        },
+        userId: userId.toString(),
+        chatId: chatId.toString()
+      });
     } catch (error) {
-        console.error('Callback xatosi:', error.message);
-        await bot.answerCallbackQuery(callbackQuery.id, { text: `Xatolik yuz berdi: ${error.message}` });
+      console.error("Error processing file:", error);
+      bot.sendMessage(chatId, "❌ Error processing your file. Please try again.");
     }
+  }
 });
 
-bot.onText(/\/health/, async (msg) => {
-    const chatId = msg.chat.id;
-    try {
-        const dbStatus = mongoose.connection.readyState === 1 ? 'Connected' : 'Disconnected';
-        const response = `Bot Status: Running ✅\nMongoDB: ${dbStatus} ✅\nTimestamp: ${moment().tz('Asia/Tashkent').format('YYYY-MM-DD HH:mm:ss')} ✅`;
-        await bot.sendMessage(chatId, response, { parse_mode: 'Markdown' });
-    } catch (error) {
-        console.error('Health check error:', error.message);
-        await bot.sendMessage(chatId, `Health check failed: ${error.message}`);
-    }
-});
+bot.on("callback_query", async (callbackQuery) => {
+  const messageId = callbackQuery.message.message_id;
+  const chatId = callbackQuery.message.chat.id;
+  const selectedId = callbackQuery.data;
+  const state = userState.get(messageId);
 
-bot.onText(/\/report/, async (msg) => {
-    const chatId = msg.chat.id;
+  if (!state || !config.AVAILABLE_IDS.includes(selectedId)) {
+    return bot.answerCallbackQuery(callbackQuery.id, {
+      text: "Invalid selection or file not found",
+      show_alert: true
+    });
+  }
+
+  try {
+    const filePath = path.join(config.UPLOAD_DIR, `${state.fileInfo.fileId}_${state.fileInfo.fileName}`);
+    const fileStream = bot.getFileStream(state.fileInfo.fileId);
+    const writeStream = fs.createWriteStream(filePath);
+
+    await new Promise((resolve, reject) => {
+      fileStream.pipe(writeStream);
+      writeStream.on("finish", resolve);
+      writeStream.on("error", reject);
+    });
+
+    const fileRecord = new File({
+      fileId: state.fileInfo.fileId,
+      originalName: state.fileInfo.fileName,
+      fileType: state.fileInfo.fileType,
+      userId: state.userId,
+      userSelectedId: selectedId,
+      shift: state.fileInfo.shift,
+      chatId: state.chatId,
+      filePath,
+      saveTime: moment().tz('UTC').toDate(), // Use UTC
+      status: "saved"
+    });
+
+    await fileRecord.save();
     
-    try {
-        const now = moment().tz('Asia/Tashkent');
-        const today = now.startOf('day');
-        
-        const shifts = [
-            { start: '07:00', end: '15:00' },
-            { start: '15:00', end: '23:00' },
-            { start: '23:00', end: '07:00' }
-        ];
-        
-        let report = '📊 8 soatlik hisobot:\n\n';
-        
-        for (const shift of shifts) {
-            let start, end;
-            if (shift.start === '23:00') {
-                start = moment.tz(`${today.format('YYYY-MM-DD')} ${shift.start}`, 'YYYY-MM-DD HH:mm', 'Asia/Tashkent');
-                end = moment.tz(`${today.clone().add(1, 'day').format('YYYY-MM-DD')} ${shift.end}`, 'YYYY-MM-DD HH:mm', 'Asia/Tashkent');
-            } else {
-                start = moment.tz(`${today.format('YYYY-MM-DD')} ${shift.start}`, 'YYYY-MM-DD HH:mm', 'Asia/Tashkent');
-                end = moment.tz(`${today.format('YYYY-MM-DD')} ${shift.end}`, 'YYYY-MM-DD HH:mm', 'Asia/Tashkent');
-            }
-            
-            const count = await File.countDocuments({
-                chatId: chatId.toString(),
-                timestamp: { $gte: start.toDate(), $lt: end.toDate() }
-            });
-            
-            report += `${start.format('HH:mm')} - ${end.format('HH:mm')}:\n`;
-            report += `Fayllar soni: ${count}\n\n`;
-        }
-        
-        const dailyCount = await File.countDocuments({
-            chatId: chatId.toString(),
-            timestamp: { $gte: today.toDate(), $lt: today.clone().add(1, 'day').toDate() }
-        });
-        const monthlyCount = await File.countDocuments({
-            chatId: chatId.toString(),
-            timestamp: { $gte: today.clone().startOf('month').toDate(), $lt: today.clone().endOf('month').toDate() }
-        });
-        const yearlyCount = await File.countDocuments({
-            chatId: chatId.toString(),
-            timestamp: { $gte: today.clone().startOf('year').toDate(), $lt: today.clone().endOf('year').toDate() }
-        });
-        
-        report += '📅 Umumiy hisobot:\n';
-        report += `Kunlik: <b><code>${dailyCount}</code></b> fayl\n`;
-        report += `Oylik: <b><code>${monthlyCount}</code></b> fayl\n`;
-        report += `Yillik: <b><code>${yearlyCount}</code></b> fayl\n`;
-        
-        await bot.sendMessage(chatId, report, { parse_mode: 'HTML' });
-        await bot.sendMessage(channelId, report, { parse_mode: 'HTML' });
-    } catch (error) {
-        console.error('Hisobot xatosi:', error.message);
-        await bot.sendMessage(chatId, `Hisobotni yaratishda xatolik: ${error.message}`);
-    }
+    // Clean up
+    await bot.deleteMessage(chatId, state.fileInfo.originalMsgId).catch(console.error);
+    await bot.deleteMessage(chatId, messageId).catch(console.error);
+    userState.delete(messageId);
+
+    await bot.answerCallbackQuery(callbackQuery.id, {
+      text: `✅ File assigned to ${selectedId}`,
+      show_alert: false
+    });
+  } catch (error) {
+    console.error("Error saving file:", error);
+    await bot.answerCallbackQuery(callbackQuery.id, {
+      text: "❌ Error saving file",
+      show_alert: true
+    });
+  }
 });
 
-setInterval(async () => {
-    const chatId = Object.keys(lastFileMessage)[0] || '-1002734172243';
-    try {
-        const now = moment().tz('Asia/Tashkent');
-        const today = now.startOf('day');
-        
-        const shifts = [
-            { start: '07:00', end: '15:00' },
-            { start: '15:00', end: '23:00' },
-            { start: '23:00', end: '07:00' }
-        ];
-        
-        let report = '📊 8 soatlik hisobot:\n\n';
-        
-        for (const shift of shifts) {
-            let start, end;
-            if (shift.start === '23:00') {
-                start = moment.tz(`${today.format('YYYY-MM-DD')} ${shift.start}`, 'YYYY-MM-DD HH:mm', 'Asia/Tashkent');
-                end = moment.tz(`${today.clone().add(1, 'day').format('YYYY-MM-DD')} ${shift.end}`, 'YYYY-MM-DD HH:mm', 'Asia/Tashkent');
-            } else {
-                start = moment.tz(`${today.format('YYYY-MM-DD')} ${shift.start}`, 'YYYY-MM-DD HH:mm', 'Asia/Tashkent');
-                end = moment.tz(`${today.format('YYYY-MM-DD')} ${shift.end}`, 'YYYY-MM-DD HH:mm', 'Asia/Tashkent');
-            }
-            
-            const count = await File.countDocuments({
-                chatId: chatId.toString(),
-                timestamp: { $gte: start.toDate(), $lt: end.toDate() }
-            });
-            
-            report += `${start.format('HH:mm')} - ${end.format('HH:mm')}:\n`;
-            report += `Fayllar soni: ${count}\n\n`;
-        }
-        
-        const dailyCount = await File.countDocuments({
-            chatId: chatId.toString(),
-            timestamp: { $gte: today.toDate(), $lt: today.clone().add(1, 'day').toDate() }
-        });
-        const monthlyCount = await File.countDocuments({
-            chatId: chatId.toString(),
-            timestamp: { $gte: today.clone().startOf('month').toDate(), $lt: today.clone().endOf('month').toDate() }
-        });
-        const yearlyCount = await File.countDocuments({
-            chatId: chatId.toString(),
-            timestamp: { $gte: today.clone().startOf('year').toDate(), $lt: today.clone().endOf('year').toDate() }
-        });
-        
-        report += '📅 Umumiy hisobot:\n';
-        report += `Kunlik: <b><code>${dailyCount}</code></b> fayl\n`;
-        report += `Oylik: <b><code>${monthlyCount}</code></b> fayl\n`;
-        report += `Yillik: <b><code>${yearlyCount}</code></b> fayl\n`;
-        
-        await bot.sendMessage(channelId, report, { parse_mode: 'HTML' });
-    } catch (error) {
-        console.error('Avtomatik hisobot xatosi:', error.message);
-    }
-}, 8 * 60 * 60 * 1000);
-
-bot.on('polling_error', async (error) => {
-    console.error('Polling xatosi:', error.code, error.message);
-    if (error.code === 'EFATAL' || error.message.includes('ECONNRESET')) {
-        console.log('Tarmoq xatosi aniqlandi. 5 sekunddan keyin qayta urinish...');
-        setTimeout(() => {
-            console.log('Polling qayta boshlanmoqda...');
-        }, 5000);
-    }
+// API Routes
+app.get("/api/health", (req, res) => {
+  res.status(200).json({
+    status: "ok",
+    message: "Bot and API server are running",
+    timestamp: moment().tz('UTC').toISOString()
+  });
 });
 
-console.log('Bot ishga tushdi...');
+app.get("/api/files", async (req, res) => {
+  try {
+    const { date, year, month, shift, fileType } = req.query;
+    const query = { status: "saved" };
+
+    let startDate, endDate;
+    if (date) {
+      startDate = moment.tz(date, 'YYYY-MM-DD', 'UTC').startOf('day').toDate();
+      endDate = moment(startDate).add(1, 'day').toDate();
+      query.uploadTime = { $gte: startDate, $lt: endDate };
+    } else if (year && month) {
+      startDate = moment.tz(`${year}-${month}-01`, 'UTC').startOf('month').toDate();
+      endDate = moment(startDate).add(1, 'month').toDate();
+      query.uploadTime = { $gte: startDate, $lt: endDate };
+    }
+
+    if (shift && shift !== 'all') query.shift = shift;
+    if (fileType && fileType !== 'all') query.fileType = fileType;
+
+    const files = await File.find(query).sort({ uploadTime: -1 });
+    res.json(files);
+  } catch (error) {
+    console.error("Error fetching files:", error);
+    res.status(500).json({ message: error.message });
+  }
+});
+
+app.get("/api/files/:id/download", async (req, res) => {
+  try {
+    const file = await File.findById(req.params.id);
+    if (!file) return res.status(404).json({ message: "File not found" });
+    if (!fs.existsSync(file.filePath)) return res.status(404).json({ message: "File not found on server" });
+    res.download(file.filePath, file.originalName);
+  } catch (error) {
+    console.error("Error downloading file:", error);
+    res.status(500).json({ message: error.message });
+  }
+});
+
+app.delete("/api/files/:id", async (req, res) => {
+  try {
+    const file = await File.findByIdAndUpdate(req.params.id, {
+      status: "deleted",
+      deleteTime: moment().tz('UTC').toDate(),
+      userSelectedId: "N/A"
+    }, { new: true });
+
+    if (!file) return res.status(404).json({ message: "File not found" });
+    
+    if (fs.existsSync(file.filePath)) {
+      fs.unlinkSync(file.filePath);
+    }
+
+    res.json({ message: "File deleted successfully" });
+  } catch (error) {
+    console.error("Error deleting file:", error);
+    res.status(500).json({ message: error.message });
+  }
+});
+
+app.get("/api/reports/shift", async (req, res) => {
+  try {
+    const { date, fileType } = req.query;
+    if (!date) return res.status(400).json({ message: "Date is required" });
+
+    const startDate = moment.tz(date, 'YYYY-MM-DD', 'UTC').startOf('day').toDate();
+    const endDate = moment(startDate).add(1, 'day').toDate();
+
+    const query = { uploadTime: { $gte: startDate, $lt: endDate }, status: "saved" };
+    if (fileType && fileType !== 'all') query.fileType = fileType;
+
+    const stats = await File.aggregate([
+      { $match: query },
+      { $group: { _id: "$shift", count: { $sum: 1 } } },
+      { $sort: { _id: 1 } }
+    ]);
+
+    // Ensure all shifts are represented
+    const allShifts = ['morning', 'afternoon', 'night'];
+    const result = allShifts.map(shift => ({
+      _id: shift,
+      count: stats.find(s => s._id === shift)?.count || 0
+    }));
+
+    res.json(result);
+  } catch (error) {
+    console.error("Error fetching shift report:", error);
+    res.status(500).json({ message: error.message });
+  }
+});
+
+app.get("/api/reports/id", async (req, res) => {
+  try {
+    const { date, year, month, shift, fileType } = req.query;
+    let startDate, endDate;
+
+    if (date) {
+      startDate = moment.tz(date, 'YYYY-MM-DD', 'UTC').startOf('day').toDate();
+      endDate = moment(startDate).add(1, 'day').toDate();
+    } else if (year && month) {
+      startDate = moment.tz(`${year}-${month}-01`, 'UTC').startOf('month').toDate();
+      endDate = moment(startDate).add(1, 'month').toDate();
+    } else {
+      return res.status(400).json({ message: "Date or year/month required" });
+    }
+
+    const query = { uploadTime: { $gte: startDate, $lt: endDate }, status: "saved" };
+    if (shift && shift !== 'all') query.shift = shift;
+    if (fileType && fileType !== 'all') query.fileType = fileType;
+
+    const stats = await File.aggregate([
+      { $match: query },
+      { $group: { _id: "$userSelectedId", count: { $sum: 1 } } },
+      { $sort: { _id: 1 } }
+    ]);
+
+    res.json(stats);
+  } catch (error) {
+    console.error("Error fetching ID report:", error);
+    res.status(500).json({ message: error.message });
+  }
+});
+
+app.get("/api/reports/id_by_shift", async (req, res) => {
+  try {
+    const { date, year, month, fileType } = req.query;
+    let startDate, endDate;
+
+    if (date) {
+      startDate = moment.tz(date, 'YYYY-MM-DD', 'UTC').startOf('day').toDate();
+      endDate = moment(startDate).add(1, 'day').toDate();
+    } else if (year && month) {
+      startDate = moment.tz(`${year}-${month}-01`, 'UTC').startOf('month').toDate();
+      endDate = moment(startDate).add(1, 'month').toDate();
+    } else {
+      return res.status(400).json({ message: "Date or year/month required" });
+    }
+
+    const query = { uploadTime: { $gte: startDate, $lt: endDate }, status: "saved" };
+    if (fileType && fileType !== 'all') query.fileType = fileType;
+
+    const stats = await File.aggregate([
+      { $match: query },
+      { $group: { _id: { userSelectedId: "$userSelectedId", shift: "$shift" }, count: { $sum: 1 } } },
+      { $sort: { "_id.userSelectedId": 1, "_id.shift": 1 } }
+    ]);
+
+    res.json(stats);
+  } catch (error) {
+    console.error("Error fetching ID by shift report:", error);
+    res.status(500).json({ message: error.message });
+  }
+});
+
+app.get("/api/reports/monthly", async (req, res) => {
+  try {
+    const { year, month, shift, fileType } = req.query;
+    if (!year || !month) return res.status(400).json({ message: "Year and month are required" });
+
+    const startDate = moment.tz(`${year}-${month}-01`, 'UTC').startOf('month').toDate();
+    const endDate = moment(startDate).add(1, 'month').toDate();
+
+    const query = { uploadTime: { $gte: startDate, $lt: endDate }, status: "saved" };
+    if (shift && shift !== 'all') query.shift = shift;
+    if (fileType && fileType !== 'all') query.fileType = fileType;
+
+    const stats = await File.aggregate([
+      { $match: query },
+      { 
+        $group: { 
+          _id: {
+            day: { $dayOfMonth: "$uploadTime" },
+            shift: "$shift"
+          },
+          count: { $sum: 1 }
+        } 
+      },
+      { 
+        $group: {
+          _id: "$_id.day",
+          shifts: {
+            $push: {
+              shift: "$_id.shift",
+              count: "$count"
+            }
+          },
+          total: { $sum: "$count" }
+        }
+      },
+      { $sort: { _id: 1 } }
+    ]);
+
+    res.json(stats);
+  } catch (error) {
+    console.error("Error fetching monthly report:", error);
+    res.status(500).json({ message: error.message });
+  }
+});
+
+// Error Handling
+bot.on("polling_error", (error) => {
+  console.error("Polling error:", error);
+});
+
+// Start Server
+app.listen(config.PORT, () => {
+  console.log(`🚀 Server running on port ${config.PORT}`);
+  console.log("🤖 Telegram bot is running");
+});
